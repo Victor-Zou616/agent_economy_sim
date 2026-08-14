@@ -1,7 +1,8 @@
 """管理一个卖家和两个买家的连续竞价与确定性规则。"""
 
 from agent import BargainingAgent
-from protocol import BargainAction, BargainObservation
+from protocol import BargainAction, BargainObservation, ProductProfile
+from tools import ProductInspectionService
 
 
 class BargainingEnvironment:
@@ -11,23 +12,29 @@ class BargainingEnvironment:
         self,
         seller: BargainingAgent,
         buyers: list[BargainingAgent],
+        inspection_service: ProductInspectionService,
         product_name: str = "二手自行车",
         max_rounds: int = 5,
     ) -> None:
         if len(buyers) != 2:
-            raise ValueError("Step1 需要且只需要两个买家")
+            raise ValueError("Step2 需要且只需要两个买家")
 
         self.seller = seller
         self.buyers = buyers
+        self.inspection_service = inspection_service
         self.product_name = product_name
         self.max_rounds = max_rounds
         self.current_price: float | None = None
         self.offered_by: str | None = None
         self.history: list[str] = []
+        self.product_profile: ProductProfile | None = None
 
     def run(self) -> None:
         """依次执行挂牌、买家竞价和卖家决策。"""
 
+        self.product_profile = self.seller.create_product_profile(self.product_name)
+        self.inspection_service.set_profile(self.product_profile)
+        print("卖家已建立私有商品档案，竞价过程中不会修改。")
         print(
             f"开始三 Agent 竞价：商品为{self.product_name}，"
             f"最多 {self.max_rounds} 轮。"
@@ -41,6 +48,7 @@ class BargainingEnvironment:
 
             for buyer in self.buyers:
                 observation = self._create_observation(
+                    actor=buyer,
                     phase="竞价",
                     round_number=round_number,
                     allowed_actions=["出价", "放弃"],
@@ -66,6 +74,7 @@ class BargainingEnvironment:
 
         print("\n──────────── 卖家挂牌 ────────────")
         observation = self._create_observation(
+            actor=self.seller,
             phase="挂牌",
             round_number=0,
             allowed_actions=["挂牌", "退出"],
@@ -100,6 +109,7 @@ class BargainingEnvironment:
             )
 
         observation = self._create_observation(
+            actor=self.seller,
             phase="卖家决策",
             round_number=round_number,
             allowed_actions=allowed_actions,
@@ -119,7 +129,10 @@ class BargainingEnvironment:
             return True
 
         if action.action_type == "退出":
-            print("\n竞价结束：卖家拒绝当前报价，本次未成交。")
+            if has_buyer_bid:
+                print("\n竞价结束：卖家拒绝当前最高报价，本次未成交。")
+            else:
+                print("\n竞价结束：没有买家出价，本次未成交。")
             return True
 
         if action.action_type == "降价":
@@ -130,16 +143,32 @@ class BargainingEnvironment:
             )
             return False
 
-        print("卖家暂不接受当前最高报价，竞价继续。")
+        if has_buyer_bid:
+            print("卖家暂不接受当前最高报价，竞价继续。")
+        else:
+            print(
+                f"本轮没有买家出价，卖家维持 "
+                f"{self._format_price(self.current_price)} 元挂牌价，竞价继续。"
+            )
         return False
 
     def _create_observation(
         self,
+        actor: BargainingAgent,
         phase: str,
         round_number: int,
         allowed_actions: list[str],
     ) -> BargainObservation:
         """将环境当前公共状态封装成 Observation。"""
+
+        if actor.role == "卖家":
+            private_information = (
+                self.product_profile.fact_lines() if self.product_profile else []
+            )
+        else:
+            private_information = self.inspection_service.private_results_for(
+                actor.name
+            )
 
         return BargainObservation(
             product_name=self.product_name,
@@ -150,6 +179,7 @@ class BargainingEnvironment:
             offered_by=self.offered_by,
             allowed_actions=allowed_actions,
             history=self.history.copy(),
+            private_information=private_information,
         )
 
     def _request_valid_action(
